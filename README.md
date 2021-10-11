@@ -1,2 +1,2 @@
-# Empathetic Deep Learning to the Rescue: Sppech Emtoion Recognition from adults to Children
+# Empathetic Deep Learning to the Rescue: Speech Emotion Recognition from Adults to Children
 

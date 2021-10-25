@@ -3,10 +3,11 @@ import torch.nn as nn
 from torch.nn import functional as F
 from torch.autograd import Variable
 
+
 # CNN Network
-class CNN_MFCC(nn.Module):
-    def __init__(self, num_classes=5, kernel_size1=(3,1), kernel_size2=(2,1), dur=50):
-        super(CNN_MFCC, self).__init__()
+class CNN(nn.Module):
+    def __init__(self, num_classes=5, kernel_size1=(3,1), kernel_size2=(2,1), dur=50, input = "mfcc"):
+        super(CNN, self).__init__()
 
         # Input shape = (batch_size, 1, numceps=40, mfcc_dur=50)
         # Input (batch_size, num_channels, height, width)
@@ -15,7 +16,7 @@ class CNN_MFCC(nn.Module):
         self.num_classes = num_classes
 
         #kernel_size=(3,1) not to influence time dimension
-        self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=kernel_size1, stride=1)
+        self.conv1 = nn.Conv2d(in_channels=1, out_channels=8, kernel_size=kernel_size1) # stride=1
         # Shape = ([batch_size, 8, (40-3+1)/1, 50])
         self.bn1 = nn.BatchNorm2d(num_features=8) # num_features = num_filters
         self.relu1 = nn.ReLU()
@@ -27,41 +28,46 @@ class CNN_MFCC(nn.Module):
         # Shape = (batch_size, 16, 17, 50)
         self.relu2 = nn.ReLU()
 
-        # TODO: either expanding or narrowing
+        # either expanding or narrowing
 
         self.conv3 = nn.Conv2d(in_channels=16, out_channels=5, kernel_size=kernel_size2, stride=1)
         # Shape = (batch_size, 5, 16, 50)
         self.bn3 = nn.BatchNorm2d(num_features=5)
         self.relu3 = nn.ReLU()
-
-        self.fc = nn.Linear(in_features=self.num_classes*16*self.dur, out_features=num_classes)
+        if input == "mspectr":
+            self.fc = nn.Linear(in_features=5*60*self.dur, out_features=num_classes)
+        else:
+            self.fc = nn.Linear(in_features=5*16*self.dur, out_features=num_classes)
 
     # Feed forward function
     def forward(self, input):
         output = self.conv1(input)
-        #print("output shape after conv1", output.shape)
+        #print("output shape after conv1", output.shape)     # mspectr: ([batch_size, 8, 126, 50])/(bs, 8, 38, 50)
         output = self.bn1(output)
         #print("output shape after bn1", output.shape)
         output = self.relu1(output)
         #print("output shape after relu1", output.shape)
 
         output = self.pool(output)
-        #print("output shape after pool", output.shape)
+        #print("output shape after pool", output.shape)      # mspectr (bs, 8, 63, 50) /mfcc (bs, 8, 19, 50)
 
         output = self.conv2(output)
-        #print("output shape after conv2", output.shape)
+        #print("output shape after conv2", output.shape)     # mspectr (bs, 16, 61, 50) /mfcc (bs, 16, 17, 50)
         output = self.relu2(output)
         #print("output shape after relu2", output.shape)
 
         output = self.conv3(output)
-        #print("output shape after conv3", output.shape)
+        #print("output shape after conv3", output.shape)     # mspectr (bs, 5, 60, 50) /mfcc (bs, 5, 16, 50)
         output = self.bn3(output)
         #print("output shape after bn3", output.shape)
         output = self.relu3(output)
-        #print("output shape after relu3", output.shape)
+        #print("output shape after relu3", output.shape)     # mspectr ([bs, 5, 60, 50])/ mfcc (bs, 5, 16, 50)
 
-        #output = output.view(-1, 5*16*self.dur)
-        output = output.view(-1, self.num_classes * 16 * self.dur)
+        if input == "mspectr":
+            output = output.view(-1, 5*60*self.dur)
+        else:
+            output = output.view(-1, 5*16*self.dur)
+        #print("output shape", output.shape)
         output = self.fc(output)
         return output
 
@@ -127,7 +133,6 @@ class Conv_GRU(nn.Module):
         outConvShape = self._get_conv_output(self.input_shape)
         # Number of features
         input_size = self.n_ch * outConvShape  # input_size=num_channels*num_dimensions
-
         self.GRU = t.nn.GRU(input_size, self.hidden_size,
                                 bidirectional=self.bidirectional,
                                 num_layers=self.nlayers_Bigru,
@@ -151,7 +156,8 @@ class Conv_GRU(nn.Module):
         inputd = Variable(t.rand(*shape))
         output_feat = self._forward_Conv(inputd)
         # As the sequence is static for the gru and the dimension that we transform was mfccs we extract the output of the dimension 3
-        n_size = output_feat.size(2)  # output_feat.data.view(inputd.size()[0], -1).size(1)
+        n_size = output_feat.size(2)
+        #n_size = output_feat.data.view(inputd.size()[0], -1).size(1)
         return n_size
 
     def _forward_Conv(self, x):
@@ -180,8 +186,9 @@ class Conv_GRU(nn.Module):
         out = out.contiguous().view(out.shape[0], out.shape[1], -1)
         # Concatenate sequence length and # MFCCs resulting
         # [batch size, sequence length, channels*# MFCCs]
+        #print("out shape before GRU", out.shape)  # mfcc torch.Size([8, 50, 76]) # mspectr torch.Size([8, 50, 252])
         out, _ = self.GRU(out)
-        print("out shape before batchnorm", out.shape)
+
         out = self.BatchNorm_biGru(out)
         out = F.dropout(F.elu(out))
 

@@ -11,7 +11,7 @@ from torch.optim import Adam
 from utils import get_device
 from prepare_data import load_data
 from preprocess_audio import NUMCEP as numcep, MFCC_DUR as mfcc_dur, SPECTR_DUR as spectr_dur
-from models import CNN_MFCC, CNN_Spectr, Conv_GRU, AttentionLSTM
+from models import CNN, CNN_Spectr, Conv_GRU, AttentionLSTM
 from trainer import Trainer
 
 # some hyper parameters
@@ -36,14 +36,22 @@ if __name__ == "__main__":
     EPOCHS = args.epochs
 
     # create an instance of our model
-    if args.model_name == "conv_gru":
+    if args.model_name == "gru-mfcc":
         unsqueeze_needed = True
         input = "mfcc"
         model = Conv_GRU(input_shape=[BATCH_SIZE, 1, numcep, mfcc_dur], hidden_size=32).to(device)
+    elif args.model_name == "gru-mspectr":
+        unsqueeze_needed = True
+        input = "mspectr"
+        model = Conv_GRU(input_shape=[BATCH_SIZE, 1, 128, mfcc_dur], hidden_size=32).to(device)
     elif args.model_name == "cnn-mfcc":
         unsqueeze_needed = True
         input = "mfcc"
-        model = CNN_MFCC(num_classes=5, kernel_size1=(3,1), kernel_size2=(2,1), dur=mfcc_dur).to(device)
+        model = CNN(num_classes=5, kernel_size1=(3,1), kernel_size2=(2,1), dur=mfcc_dur, input=input).to(device)
+    elif args.model_name == "cnn-mspectr":
+        unsqueeze_needed = True
+        input = "mspectr"
+        model = CNN(num_classes=5, kernel_size1=(3,1), kernel_size2=(2,1), dur=mfcc_dur, input=input).to(device)
     elif args.model_name == "cnn-spectr":
         unsqueeze_needed = False
         input = "spectr"
@@ -54,7 +62,8 @@ if __name__ == "__main__":
         input = "mfcc"
         model = AttentionLSTM(BATCH_SIZE, num_classes=5, hidden_dim=100, emb_dim=50)
     else:
-        raise Exception("model_name parameter has to be one of [conv_gru|cnn-mfcc|cnn-spectr|att_lstm] | batch_size | number of epochs")
+        raise Exception("model_name parameter has to be one of \
+        [gru-mfcc|gru-mspectr|cnn-mfcc|cnn-spectr|cnn-mspectr|att_lstm] | batch_size | number of epochs")
     
     train_dataset, test_dataset = load_data(input=input)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)

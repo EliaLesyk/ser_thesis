@@ -3,7 +3,8 @@ import pylab
 import skimage.measure
 import wave
 import python_speech_features as psf
-#import librosa
+import librosa
+import math
 import matplotlib.pyplot as plt
 import scipy.io.wavfile as wav
 
@@ -54,8 +55,19 @@ def generate_spectrogram(wav_file, view=False):
     if view:
         plt.imshow(spec_cropped, cmap='hot', interpolation='nearest')
         plt.show()
-
+    #print(spectrogram.shape)
     return spectrogram
+
+
+def generate_mspectr(file_audio, view=False):
+    y, sr = librosa.load(file_audio, sr=16000)      # works with errors without sr=16k
+    mspectr = librosa.feature.melspectrogram(y, sr, n_fft=4096, hop_length=int(0.01*sr), win_length=int(0.025*sr), \
+                                             window='hann')
+    #print("mspectr.shape", mspectr.shape)      # (128, 120-1100)
+    if view:
+        plt.imshow(mspectr, cmap='hot', interpolation='nearest')
+        plt.show()
+    return mspectr
 
 
 def generate_mfcc(file_audio, view=False):
@@ -74,8 +86,46 @@ def generate_mfcc(file_audio, view=False):
         plt.xlabel('Time [sec]', fontsize=18)
         plt.tight_layout()
         plt.show()
+    #print("mfcc shape", mfcc_reord.shape)
     return mfcc_reord
 
+
+'''
+https://github.com/sleekEagle/audio_processing/blob/master/mix_noise.py
+Signal to noise ratio (SNR) can be defined as 
+SNR = 20*log(RMS_signal/RMS_noise)
+where RMS_signal is the RMS value of signal and RMS_noise is that of noise.
+      log is the logarithm of 10
+*****additive white gausian noise (AWGN)****
+ - This kind of noise can be added (arithmatic element-wise addition) to the signal
+ - mean value is zero (randomly sampled from a gausian distribution with mean value of zero. standard daviation can varry)
+ - contains all the frequency components in an equal manner (hence "white" noise) 
+'''
+
+
+def add_white_noise(file_audio, SNR=10):
+    '''
+    given a signal and desired SNR (in dB), this gives the required AWGN
+    what should be added to the signal to get the desired SNR
+    '''
+    #signal, sr = librosa.load(file_audio, sr=16000)
+    sr, signal = wav.read(file_audio)
+    signal = np.interp(signal, (signal.min(), signal.max()), (-1, 1))
+    #RMS value of signal
+    RMS_s = math.sqrt(np.mean(signal**2))
+    #RMS values of noise
+    RMS_n = math.sqrt(RMS_s**2/(pow(10, SNR/10)))
+    #Additive white gausian noise. Thereore mean=0
+    #Because sample length is large (typically > 40000)
+    #we can use the population formula for standard daviation.
+    #because mean=0 STD=RMS
+    STD_n = RMS_n
+    noise = np.random.normal(0, STD_n, signal.shape[0])
+    signal_with_noise = signal + noise
+    # save file to the folder
+    file_audio_name = file_audio.split('.wav')[0]
+    file_final_name = "{}.wav".format(file_audio_name + "_with_{}dB_noise".format(SNR))
+    return wav.write(file_final_name, sr, signal_with_noise)
 
 
 """

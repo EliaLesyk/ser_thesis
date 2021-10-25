@@ -11,7 +11,6 @@ def timeit(method):
         te = time()
         print ("{} - {} sec".format(method.__name__, te-ts))
         return result
-
     return timed
 
 

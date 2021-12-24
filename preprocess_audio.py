@@ -1,19 +1,26 @@
+import math
+import wave
+
+import librosa
+import matplotlib.pyplot as plt
 import numpy as np
 import pylab
-import skimage.measure
-import wave
-import python_speech_features as psf
-import librosa
-import math
-import matplotlib.pyplot as plt
 import scipy.io.wavfile as wav
+import scipy.signal as sig
+import skimage.measure
+from scipy.fftpack import dct  # Discrete Cosine Transform
 
-
+#IEMOCAP
 SPECTR_DUR = 128
-
-NUMCEP = 40
-MFCC_DUR = 50
+NUMCEP = 40     # Number of coefficients to extract
+ICP_MFCC_DUR = 50
 MFCC_STEP = 25
+
+#RAVDESS
+rvd_audio_dur = 3
+rvd_sampling_rate = 44100
+rvd_input_len = rvd_sampling_rate * rvd_audio_dur
+rvd_mspectr_dur = 259
 
 
 def generate_spectrogram(wav_file, view=False):
@@ -24,8 +31,8 @@ def generate_spectrogram(wav_file, view=False):
     def get_wav_info(wav_file):
         wav = wave.open(wav_file, 'r')
         frames = wav.readframes(-1)
-        #sound_info = pylab.fromstring(frames, 'Int16')
-        sound_info = pylab.fromstring(frames, pylab.uint8)
+        sound_info = np.fromstring(frames, dtype=np.uint16)
+        #sound_info = pylab.fromstring(frames, pylab.uint8)
         frame_rate = wav.getframerate()
         wav.close()
         return sound_info, frame_rate
@@ -33,7 +40,8 @@ def generate_spectrogram(wav_file, view=False):
     """Based on https://dzone.com/articles/generating-audio-spectrograms"""
 
     """Loading wav file"""
-    sound_info, frame_rate = get_wav_info(wav_file)
+    #sound_info, frame_rate = get_wav_info(wav_file)
+    frame_rate, sound_info = wav.read(wav_file)
 
     """Creating spectrogram"""
     spec, freqs, times, axes = pylab.specgram(sound_info, Fs=frame_rate)
@@ -59,36 +67,127 @@ def generate_spectrogram(wav_file, view=False):
     return spectrogram
 
 
-def generate_mspectr(file_audio, view=False):
+def generate_mel_spectr(file_audio, view=False):
     y, sr = librosa.load(file_audio, sr=16000)      # works with errors without sr=16k
     mspectr = librosa.feature.melspectrogram(y, sr, n_fft=4096, hop_length=int(0.01*sr), win_length=int(0.025*sr), \
                                              window='hann')
+    log_mspectr = librosa.power_to_db(mspectr)      # 10*np.log10()
     #print("mspectr.shape", mspectr.shape)      # (128, 120-1100)
     if view:
-        plt.imshow(mspectr, cmap='hot', interpolation='nearest')
+        plt.imshow(log_mspectr, cmap='hot', interpolation='nearest')
         plt.show()
-    return mspectr
+    return log_mspectr
+
+
+def generate_ravdess_mspectr(file_audio):
+    # n_mfcc = 20
+    # data_sample = np.zeros(input_length)
+    # MFCC = librosa.feature.mfcc(data_sample, sr=sampling_rate, n_mfcc=n_mfcc)
+    # audios = np.empty(shape=(modelling_db.shape[0], 128, MFCC.shape[1], 1))
+
+    signal, sample_rate = librosa.load(file_audio, res_type='kaiser_fast', sr=22050 * 2)
+    signal, index = librosa.effects.trim(signal, top_db=25)
+    signal = sig.wiener(signal)
+
+    if len(signal) > rvd_input_len:
+        signal = signal[0:rvd_input_len]
+    elif rvd_input_len > len(signal):
+        max_offset = rvd_input_len - len(signal)
+        signal = np.pad(signal, (0, max_offset), "constant")
+
+    melspec = librosa.feature.melspectrogram(signal, sr=sample_rate, n_mels=128, n_fft=2048, hop_length=512)
+    logspec = librosa.amplitude_to_db(melspec)
+    #logspec = np.expand_dims(logspec, axis=-1)      # (128, 259) -> (128, 259, 1)
+    return logspec
+
+
+def lifter(cepstra, L=22):
+    if L > 0:
+        nframes, ncoeff = np.shape(cepstra)
+        n = np.arange(ncoeff)
+        lift = 1 + (L / 2) * np.sin(np.pi * n / L)
+        return lift * cepstra
+    else:
+        # values of L <= 0, do nothing
+        return cepstra
 
 
 def generate_mfcc(file_audio, view=False):
-    fs, sig = wav.read(file_audio)  # fs is sample rate
-    mfcc = psf.mfcc(sig, fs, numcep=NUMCEP, nfilt=NUMCEP) # numcep=128 -> (dur, numcep), should be flipped
+    #fs, sig = wav.read(file_audio)  # fs is sample rate
+    #mfcc = psf.mfcc(sig, fs, numcep=NUMCEP, nfilt=NUMCEP) # numcep=128 -> (dur, numcep), should be flipped
     #sig, fs = librosa.load(file_audio)
     #mfcc = librosa.feature.mfcc(sig, fs, n_mfcc=NUMCEP, n_fft=2048)
 
     # np.flipud - Reverse the order of elements along axis 0 (up/down) -> from (dur, numcep) to (numcep, dur)
-    mfcc_reord = np.flipud(mfcc).T
+    # mfcc_reord = np.flipud(mfcc).T
+
+    cep_lifter = NUMCEP * 2 + 2
+    mfcc = dct(np.flipud(generate_mel_spectr(file_audio, view=False)).T, type=2, axis=1, norm='ortho')[:, :NUMCEP]
+    mfcc = np.array(lifter(mfcc, cep_lifter), dtype=float)
+
     if view:
+        fs, sig = wav.read(file_audio)
         plt.figure(figsize=(20,5))
         plt.title('MFCC')
-        plt.imshow(mfcc_reord, aspect='auto', extent=[0, len(sig)/fs, 0,  10])
+        plt.imshow(mfcc, aspect='auto', extent=[0, len(sig)/fs, 0,  10])
         plt.ylabel('Coefficients', fontsize=18)
         plt.xlabel('Time [sec]', fontsize=18)
         plt.tight_layout()
         plt.show()
     #print("mfcc shape", mfcc_reord.shape)
-    return mfcc_reord
+    return mfcc
 
+
+def generate_tbf(file_audio, view=False):
+    """
+    Generating time-based features
+    :param file_audio:
+    :param view:
+    :return:
+    """
+    y, sr = librosa.load(file_audio, sr=16000)      # works with errors without sr=16k
+
+    try:
+        #feature_list = [file_name, label]  # wav_file, label
+        feature_list = []
+        sig_mean = np.mean(abs(y))
+        feature_list.append(sig_mean)  # sig_mean
+        feature_list.append(np.std(y))  # sig_std
+
+        rmse = librosa.feature.rms(y + 0.0001)[0]  # librosa.feature.rmse isn't supported
+        feature_list.append(np.mean(rmse))  # rmse_mean
+        feature_list.append(np.std(rmse))  # rmse_std
+
+        silence = 0
+        for e in rmse:
+            if e <= 0.4 * np.mean(rmse):
+                silence += 1
+        silence /= float(len(rmse))
+        feature_list.append(silence)  # silence
+
+        y_harmonic = librosa.effects.hpss(y)[0]
+        feature_list.append(np.mean(y_harmonic) * 1000)  # harmonic (scaled by 1000)
+
+        # based on the pitch detection algorithm mentioned here:
+        # http://access.feld.cvut.cz/view.php?cisloclanku=2009060001
+        cl = 0.45 * sig_mean
+        center_clipped = []
+        for s in y:
+            if s >= cl:
+                center_clipped.append(s - cl)
+            elif s <= -cl:
+                center_clipped.append(s + cl)
+            elif np.abs(s) < cl:
+                center_clipped.append(0)
+        auto_corrs = librosa.core.autocorrelate(np.array(center_clipped))
+        feature_list.append(1000 * np.max(auto_corrs) / len(auto_corrs))  # auto_corr_max (scaled by 1000)
+        feature_list.append(np.std(auto_corrs))  # auto_corr_std
+        #features = features.append(pd.DataFrame(feature_list, index=columns).transpose(), ignore_index=True)
+
+    except:
+        print('Some exception with {} occured'.format(file_audio))
+
+    return feature_list
 
 '''
 https://github.com/sleekEagle/audio_processing/blob/master/mix_noise.py
@@ -247,76 +346,4 @@ def generate_mfcc(file_audio, view=False):
         plt.show()
 
     return mfcc_reord
-"""
-
-"""
-def read_iemocap(labels_df):
-    # creating dataframe
-    #columns = ['wav_file', 'label', 'gender', 'sig_mean', 'sig_std', 'rmse_mean', 'rmse_std', 'silence', 'harmonic',
-             #  'auto_corr_max', 'auto_corr_std']
-    #features = pd.DataFrame(columns=columns)
-    filt_df = labels_df[labels_df['emotion'].isin(emotions_used)]
-    #filt_df['gender'] = filt_df['gender'].map(dict(zip(['M', 'F'], [0, 1])))
-    feature_list = filt_df[['File Name', 'emotion', 'gender']].copy()  # wav_file, label
-    #print(feature_list)
-    for session in sessions:
-        for index, row in feature_list[feature_list['File Name'].str.contains('Ses0{}'.format(session[-1]))].iterrows():
-        #for index, row in labels_df.iterrows():
-            try:
-                file_name = row['File Name']
-                #gender = row['gender']
-                #if row['emotion'] in emotions_used:
-                #label = row['emotion']
-                file_path = data_path + session + "/" + file_name + ".wav"
-                #y = audio_vectors[file_name]
-                y, _sr = librosa.load(file_path, sr=44100)
-
-                # (?) check whether y is signal
-                # feature_list['signal'] = y
-
-                sig_mean = np.mean(abs(y))
-                feature_list['sig_mean'] = sig_mean
-                feature_list['sig_std'] = np.std(y)
-
-                rmse = librosa.feature.rms(y + 0.0001)[0] # librosa.feature.rmse isn't supported
-                feature_list['rmse_mean'] = np.mean(rmse)
-                feature_list['rmse_std'] = np.std(rmse)
-
-                silence = 0
-                for e in rmse:
-                    if e <= 0.4 * np.mean(rmse):
-                        silence += 1
-                silence /= float(len(rmse))
-                feature_list['silence'] = silence  # silence
-
-                y_harmonic = librosa.effects.hpss(y)[0]
-                feature_list['harmonic'] = np.mean(y_harmonic) * 1000  # harmonic (scaled by 1000)
-
-                # based on the pitch detection algorithm mentioned here:
-                # http://access.feld.cvut.cz/view.php?cisloclanku=2009060001
-                cl = 0.45 * sig_mean
-                center_clipped = []
-                for s in y:
-                    if s >= cl:
-                        center_clipped.append(s - cl)
-                    elif s <= -cl:
-                        center_clipped.append(s + cl)
-                    elif np.abs(s) < cl:
-                        center_clipped.append(0)
-                auto_corrs = librosa.core.autocorrelate(np.array(center_clipped))
-                auto_corr_max = 1000 * np.max(auto_corrs)/len(auto_corrs)
-                feature_list['auto_corr_max'] = auto_corr_max # scaled by 1000
-                feature_list['auto_corr_std'] = np.std(auto_corrs)  # auto_corr_std
-                #print(feature_list)
-                #features.append(pd.DataFrame(feature_list, index=columns).transpose(), ignore_index=True)
-                #print("Features dataset len:", len(features))
-            except:
-                print('Some exception occured for ', file_name)
-    #print("Feature list len:", len(feature_list[2]))
-    #return len(feature_list)
-
-    #columns = ['wav_file', 'label', 'gender', 'sig_mean', 'sig_std', 'rmse_mean', 'rmse_std', 'silence',
-                       # 'harmonic', 'auto_corr_max', 'auto_corr_std']
-    #features = pd.DataFrame(feature_list, index=columns)
-    return feature_list
 """

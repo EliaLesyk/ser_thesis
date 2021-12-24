@@ -1,15 +1,21 @@
+import os.path
+
+import numpy as np
 import torch as t
 from sklearn.metrics import f1_score, accuracy_score
+
+from prepare_data import ID_TO_CLASS
 # from tqdm.autonotebook import tqdm
-import numpy as np
 from utils import EarlyStopping, get_datetime
 
+classes = list(ID_TO_CLASS.keys())
 
 class Trainer:
 
     def __init__(self,
                  model,  # Model to be trained.
                  model_name,
+                 dataset,
                  crit,  # Loss function
                  optim=None,  # Optimizer
                  train_dl=None,  # Training data set
@@ -19,6 +25,7 @@ class Trainer:
                  unsqueeze_needed=True):
         self._model = model
         self.model_name = model_name
+        self.dataset = dataset
         self._crit = crit
         self._optim = optim
         self._train_dl = train_dl
@@ -36,10 +43,11 @@ class Trainer:
 
     #def restore_checkpoint(self, epoch_n):
     def restore_checkpoint(self):
-        #ckp = t.load('checkpoints/checkpoint_{:03d}.ckp'.format(epoch_n), 'cuda' if self._cuda else None)
-        ckp = t.load('checkpoints/' + self.model_name + 'checkpoint_{}.ckp'.format(get_datetime()), \
-                     'cuda' if self._cuda else None)
-        self._model.load_state_dict(ckp['state_dict'])
+        path = 'checkpoints/' + self.model_name + '_checkpoint_{}.ckp'.format(get_datetime())
+        if os.path.exists(path):
+            #ckp = t.load('checkpoints/checkpoint_{:03d}.ckp'.format(epoch_n), 'cuda' if self._cuda else None)
+            ckp = t.load(path, 'cuda' if self._cuda else None)
+            self._model.load_state_dict(ckp['state_dict'])
 
     def save_onnx(self, fn):
         m = self._model.cpu()
@@ -126,15 +134,41 @@ class Trainer:
                 x = x.unsqueeze(1)
 
             # perform a validation step / forward pass: compute predicted outputs by passing inputs to the model
-            loss, pred = self.val_test_step(x, y)
+            loss, pred = self.val_test_step(x, y)       # pred.shape torch.Size([8, 5]) = bs, num_cl
             # calculate metrics for this iteration
             total_loss += loss.item()
 
             # deal with multilabel
             activation = t.nn.Softmax(dim=1)
             pred = activation(pred.data)
+            """
+            pred: tensor([[0.1046, 0.2559, 0.0390, 0.2651, 0.3354],
+                          [0.1630, 0.1885, 0.1690, 0.3006, 0.1788],
+                          [0.2477, 0.1066, 0.5367, 0.0966, 0.0125],
+                          [0.0646, 0.3243, 0.0173, 0.2436, 0.3501],
+                          [0.3791, 0.2229, 0.0865, 0.2482, 0.0632],
+                          [0.2269, 0.1895, 0.2084, 0.2680, 0.1072],
+                          [0.0588, 0.1958, 0.0492, 0.2371, 0.4592],
+                          [0.2505, 0.1973, 0.1748, 0.2743, 0.1030]])
+            """
             pred = t.max(pred, 1)[1]    # choose maximum class index for the most predominant index
+            # pred: tensor([4, 3, 2, 4, 0, 3, 4, 3])
             pred = pred.cpu().detach().numpy()
+
+            # prepare to count predictions for each class
+            correct_pred = {classname: 0 for classname in classes}
+            total_pred = {classname: 0 for classname in classes}
+            # collect the correct predictions for each class
+            for label, prediction in zip(y, pred):
+                if label == prediction:
+                    correct_pred[classes[label]] += 1
+                total_pred[classes[label]] += 1
+
+            # print accuracy for each class
+            #for classname, correct_count in correct_pred.items():
+             #   accuracy = 100 * float(correct_count) / total_pred[classname]
+                #print("Accuracy for class {:5s} is: {:.1f} %".format(classname, accuracy))
+              #  print("Accuracy for class {} is: {} %".format(classname, accuracy))
 
             #total_acc += accuracy_score(y.cpu(), pred.cpu() > 0.5)
             total_acc += accuracy_score(y.cpu().detach().numpy(), np.hstack(pred))
@@ -148,7 +182,7 @@ class Trainer:
         total_f1 = total_f1 / len(self._val_test_dl)
 
         # return the loss and print the calculated metrics
-        print("Test: loss: {}, accuracy: {}%, f-score: {}".format(total_loss, total_acc, total_f1))
+        print("Test: loss: {}, accuracy: {}%, f-score: {}".format(total_loss, total_acc * 100, total_f1))
         t.enable_grad()
         return total_loss
 
@@ -166,6 +200,9 @@ class Trainer:
         #res.write(50 * '=')
         #res.write('Model \n')
         #res.write(str(self._model) + '\n')
+
+        # load the last checkpoint with the best model
+        self.restore_checkpoint()
 
         # initialize the early_stopping object
         early_stopping = EarlyStopping(patience=self._early_stopping_patience, verbose=True)
@@ -197,7 +234,7 @@ class Trainer:
 
             # early_stopping needs the validation loss to check if it has decreased,
             # if it has, it will make a checkpoint of the current model
-            early_stopping(valid_loss, self._model, self.model_name)
+            early_stopping(valid_loss, self._model, self.model_name, self.dataset)
 
             """
             # use the save_checkpoint function to save the model for each epoch
@@ -212,12 +249,12 @@ class Trainer:
             """
 
             if early_stopping.early_stop:
-                print("Early stopping")
+                print("Early stopping has been reached")
                 break
 
             # load the last checkpoint with the best model
             #self._model.load_state_dict(t.load('checkpoint.pt'))
-            self.restore_checkpoint()
+            #self.restore_checkpoint()
 
         # return model, avg_train_losses, avg_valid_losses
         #res.close()

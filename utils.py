@@ -88,6 +88,20 @@ def get_datetime():
     # storing per day to have different runs from different days
     return strftime("%Y-%m-%d", gmtime())
 
+
+def get_classnames(dataset):
+    if dataset == 'iemocap':
+        CLASS_TO_ID = {"neu": 0, "hap": 1, "sad": 2, "fru": 3, "ang": 4}
+    elif dataset == 'aibo':
+        CLASS_TO_ID = {'A': 0, 'E': 1, 'N': 2, 'P': 3, 'R': 4}
+    else:
+        #CLASS_TO_ID = {'neutral': 0, 'happy': 1, 'sad': 2, 'angry': 3, 'fearful': 4, 'disgust': 5}
+        CLASS_TO_ID = {'neutral': 0, 'happy': 1, 'sad': 2, 'angry': 3, 'fearful': 4}
+    ID_TO_CLASS = {v: k for k, v in CLASS_TO_ID.items()}
+    # w2v_classes = list(ID_TO_CLASS.keys())
+    CLASSNAMES = list(CLASS_TO_ID.keys())
+    return CLASS_TO_ID
+
 """
 def log(log_message, verbose=False):
     if verbose:

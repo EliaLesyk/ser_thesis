@@ -9,8 +9,10 @@ import pandas as pd
 import torch as t
 from torch.utils.data import TensorDataset
 
+from scipy.fftpack import dct
+
 from preprocess_audio import generate_spectrogram, generate_mel_spectr, generate_mfcc, \
-    generate_tbf, generate_ravdess_mspectr, add_white_noise, ICP_MFCC_DUR, MFCC_STEP
+    generate_tbf, generate_ravdess_mspectr, generate_ravdess_mfcc, add_white_noise, ICP_MFCC_DUR, MFCC_STEP, lifter
 from utils import timeit
 
 DATA_DIR = "/Users/el/embrace/data/"
@@ -18,27 +20,49 @@ DATA_DIR = "/Users/el/embrace/data/"
 
 IEMOCAP_PATH = DATA_DIR + 'IEMOCAP/iemocap_with_noise.pkl'
 RAVDESS_PATH = DATA_DIR + 'RAVDESS/ravdess.pkl'
+AIBO_PATH = DATA_DIR + 'AIBO/aibo.pkl'
+aibo_labels_file = "AIBO/labels/IS2009EmotionChallenge/chunk_labels_5cl_corpus.txt"
 
 SPECTROGRAMS_FEATURES_PATH = DATA_DIR + "IEMOCAP/spectrograms_features.npy"
 SPECTROGRAMS_LABELS_PATH = DATA_DIR + "IEMOCAP/spectrograms_labels.npy"
 SPECTROGRAMS_SESSIONS_PATH = DATA_DIR + "IEMOCAP/spectrograms_sessions.npy"
+
 MSPECTROGRAMS_FEATURES_PATH = DATA_DIR + "IEMOCAP/mspectrograms_features.npy"
 MSPECTROGRAMS_LABELS_PATH = DATA_DIR + "IEMOCAP/mspectrograms_labels.npy"
 MSPECTROGRAMS_SESSIONS_PATH = DATA_DIR + "IEMOCAP/mspectrograms_sessions.npy"
+
 MFCCS_FEATURES_PATH = DATA_DIR + "IEMOCAP/mfccs_features.npy"
 MFCCS_LABELS_PATH = DATA_DIR + "IEMOCAP/mfccs_labels.npy"
 MFCCS_SESSIONS_PATH = DATA_DIR + "IEMOCAP/mfccs_sessions.npy"
+
 TBF_PATH = DATA_DIR + "IEMOCAP/tbf.npy"
 TBF_LABELS_PATH = DATA_DIR + "IEMOCAP/tbf_labels.npy"
 TBF_SESSIONS_PATH = DATA_DIR + "IEMOCAP/tbf_sessions.npy"
+
 RVD_AUDIOS_PATH = DATA_DIR + "RAVDESS/audios.npy"
 
+AIBO_MFCCS_FEATURES_PATH = DATA_DIR + "AIBO/mfccs_features.npy"
+AIBO_MFCCS_LABELS_PATH = DATA_DIR + "AIBO/mfccs_labels.npy"
+AIBO_MFCCS_SESSIONS_PATH = DATA_DIR + "AIBO/mfccs_sessions.npy"
+
+AIBO_MSPECTR_FEATURES_PATH = DATA_DIR + "AIBO/mspectr_features.npy"
+AIBO_MSPECTR_LABELS_PATH = DATA_DIR + "AIBO/mspectr_labels.npy"
+AIBO_MSPECTR_SESSIONS_PATH = DATA_DIR + "AIBO/mspectr_sessions.npy"
+
 USED_CLASSES = ["neu", "hap", "sad", "ang", "fru", "exc"]
-CLASS_TO_ID = {"neu": 0, "hap": 1, "sad": 2, "fru": 3, "ang": 4}
+
 # USED_CLASSES = ["fru", "neu", "hap", "sad", "ang", "fea", "exc", "sur"]
-# CLASS_TO_ID = {"neu": 0, "hap": 1, "sur": 2, "sad": 3, "fru": 4, "ang": 5, "fea": 6}
+#CLASS_TO_ID = {"neu": 0, "hap": 1, "sur": 2, "sad": 3, "fru": 4, "ang": 5, "fea": 6}
+CLASS_TO_ID = {"neu": 0, "hap": 1, "sad": 2, "fru": 3, "ang": 4}
 ID_TO_CLASS = {v: k for k, v in CLASS_TO_ID.items()}
 ID_TO_FULL_CLASS = {0: "Neutral", 1: "Happiness", 2: "Sadness", 3: "Anger"}
+
+# Anger (angry, touchy, and reprimanding), Emphatic, Neutral, Positive (motherese and joyful),and Rest
+#aibo_dict = {'N': 'neutral', 'E': 'empathic', 'A': 'angry', 'R': 'rest', 'P': 'positive'}
+# ICP: {"neu": 0, "hap": 1, "sad": 2, "fru": 3, "ang": 4}
+# neu = N + R, ang + fru = A, hap = P
+
+aibo_dict = dict(N=0, R=1, P=2, E=3, A=4)
 
 
 def read_iemocap():
@@ -65,7 +89,7 @@ def read_iemocap():
             # add 2 new samples with white Gaussian noise
             file_name = str(row['File Name']) + '.wav'
             session_id = file_name.split('Ses0')[1][0]
-            abs_path = join(DATA_DIR, "Session{}".format(session_id), file_name)
+            abs_path = join(DATA_DIR, 'IEMOCAP/', "Session{}".format(session_id), file_name)
             add_white_noise(abs_path, SNR=10)
             row_noised = row.copy()     # if not .copy() all rows with 10 and 20dB noise in naming
             row_noised['File Name'] = str(row['File Name']) + "_with_10dB_noise"
@@ -140,6 +164,50 @@ def read_ravdess():
             pickle.dump(ravdess_db, file, protocol=pickle.HIGHEST_PROTOCOL)
     ravdess = pickle.load(open(RAVDESS_PATH, "rb"))
     return ravdess
+
+
+def split_aibo_indices(last=25, split_ratio=0.7, seed=13):
+    np.random.seed(seed)
+    train_size = int(last * split_ratio)
+    val_size = int((1 - split_ratio) / 2 * last)
+    test_size = last - train_size - val_size
+
+    a = np.arange(1, last + 1, 1)
+    b = np.random.permutation(a)
+    chunk_size = [train_size, val_size, test_size]
+    np.cumsum(chunk_size)
+    c = np.split(b, np.cumsum(chunk_size))
+    train, val, test = c[0], c[1], c[2]
+    if len(c[3]) > 0:
+        print("some samples left unused while splitting")
+    return train, val, test
+
+
+def read_aibo():
+    if not isfile(AIBO_PATH):
+        print("AIBO not found. Creating AIBO dataset...")
+        """
+        df = pd.read_csv(os.path.join(DATA_DIR, aibo_labels_file), sep=" ", header=None,
+                         names=["filename", "label", "percentage"])
+
+        #labels_df = pd.DataFrame(data, columns=["source", "speaker", "n_rec", "num", "label", "percentage"], index=None)
+        #labels_df['filename'] = labels_df.source + "_" + labels_df.speaker + "_" + labels_df.n_rec + "_" + labels_df.num
+        #file_path = aibo_path + "wav/"
+        #labels_df['path'] = file_path + labels_df['filename'] + ".wav"
+
+        file_path = DATA_DIR + "/AIBO/wav/"
+        df['path'] = file_path + df['filename'] + ".wav"
+        df['session'] = df['filename'][0:3]
+
+        train_indices, val_indices, test_indices = split_aibo_indices(32, 0.7, 6)
+        df['split'] =df['speaker'].apply(
+            lambda x: 'train' if x in train_indices else ('test' if x in test_indices else 'val'))
+        """
+        df = pd.read_csv(DATA_DIR + 'AIBO/aibo_labels_df.csv', header=0, index_col=0)
+        with open(AIBO_PATH, "wb") as file:
+            pickle.dump(df, file, protocol=pickle.HIGHEST_PROTOCOL)
+    aibo = pickle.load(open(AIBO_PATH, "rb"))
+    return aibo
 
 
 """
@@ -228,10 +296,9 @@ def load_or_create_dataset(create_func, features_path="", labels_path="", sessio
     # Loading dataset
     dataset = np.load(features_path)
     labels = np.load(labels_path)
-    sessions = np.load(sessions_path)
     print("Dataset loaded.")
     assert dataset.shape[0] == labels.shape[0]
-    # return split_dataset_session_wise(dataset, labels)
+    sessions = np.load(sessions_path)
     return dataset, labels, sessions
 
 
@@ -242,7 +309,7 @@ def create_spectrogram_dataset(**kwargs):
     iemocap = read_iemocap()
     labels = []
     spectrograms = []
-    #sess_ids = []
+    sess_ids = []
     for i, sample in enumerate(iemocap):
         # for i, sample in iemocap.iterrows():
         labels.append(CLASS_TO_ID[sample['emotion']])
@@ -253,11 +320,12 @@ def create_spectrogram_dataset(**kwargs):
         abs_path = join(DATA_DIR, "IEMOCAP/Session{}".format(session_id), sample_name)
         spectrogram = generate_spectrogram(abs_path, kwargs.get("view", False))
         spectrograms.append(spectrogram)
-        #sess_ids.append(session_id)
+        sess_ids.append(session_id)
         if i % 100 == 0:
             print(i)
     np.save(SPECTROGRAMS_LABELS_PATH, np.array(labels))
     np.save(SPECTROGRAMS_FEATURES_PATH, np.array(spectrograms))
+    np.save(SPECTROGRAMS_SESSIONS_PATH, np.array(sess_ids))
 
 
 @timeit
@@ -314,7 +382,7 @@ def create_mfccs_dataset():
                     mfccs_segmented.append(segments[i])     # segments[i] shape  (13, 50) or (40, 50) if numcep = 40
                     #print("segments[i] shape ", segments[i].shape)
                     labels_segmented.append(CLASS_TO_ID[sample['emotion']])
-                    sess_ids.append(str(sample['File Name'][:5]))
+                    sess_ids.append(session_id)
             # segment_labels = [CLASS_TO_ID[sample['emotion']] for i in range(len(segments))]
             # labels_segmented.append(np.transpose(segment_labels))
         # mfccs.append(mfcc)
@@ -346,7 +414,7 @@ def create_tbf_dataset():
     # mfccs = []
     labels = []
     tbfs = []
-    #sess_ids = []
+    sess_ids = []
 
     for i, sample in enumerate(iemocap):
         labels.append(CLASS_TO_ID[sample['emotion']])
@@ -356,16 +424,16 @@ def create_tbf_dataset():
         abs_path = join(DATA_DIR, "IEMOCAP/Session{}".format(session_id), sample_name)
         tbf = generate_tbf(abs_path, view=False)
         tbfs.append(tbf)
-        #sess_ids.append(str(sample['File Name'][:5]))
+        sess_ids.append(str(sample['File Name'][:5]))
         if i % 100 == 0:
             print("i:", i)
     np.save(TBF_LABELS_PATH, np.array(labels))
-    #np.save(TBF_SESSIONS_PATH, np.array(sess_ids))
+    np.save(TBF_SESSIONS_PATH, np.array(sess_ids))
     np.save(TBF_PATH, np.array(tbfs))
 
 
 @timeit
-def create_ravdess_dataset():
+def create_ravdess_dataset(input_type):
     if not isfile(os.path.join(RVD_AUDIOS_PATH)):
         print("RAVDESS Mel Spectrograms aren't extracted. Creating them...")
         modelling_db = read_ravdess()
@@ -382,7 +450,10 @@ def create_ravdess_dataset():
         count = 0
         #for i in tqdm(range(len(modelling_db))):
         for i in range(len(modelling_db)):
-            logspec = generate_ravdess_mspectr(modelling_db.path[i])
+            if input_type=='mfcc':
+                logspec = generate_ravdess_mfcc(modelling_db.path[i])
+            else:
+                logspec = generate_ravdess_mspectr(modelling_db.path[i])
             audios[count, ] = logspec
             count += 1
         np.save(RVD_AUDIOS_PATH, audios)
@@ -390,8 +461,76 @@ def create_ravdess_dataset():
 
 
 @timeit
+def create_aibo_mfccs_dataset():
+    # with open(balanced_iemocap_path, 'rb') as handle:
+    #   iemocap = pickle.load(handle)
+    aibo = read_aibo()
+    labels_segmented = []
+    mfccs_segmented = []
+    segments = []
+    sess_ids = []
+
+    for i, row in aibo.iterrows():
+        #mfcc = generate_mfcc(aibo['path'][i], view=False).T
+        mfcc = generate_mfcc(aibo['path'][i], view=False)
+        # cut MFCCs into segments with 500 ms duration and 250 ms overlap
+        if mfcc.shape[1] > ICP_MFCC_DUR:  # skipping mfccs less than 50 (are there no?)
+            segments = [mfcc[:, y:y + ICP_MFCC_DUR] for y in range(0, mfcc.shape[1], MFCC_STEP)]
+            for j in range(len(segments)):
+                if segments[j].shape[1] is ICP_MFCC_DUR:  # skipping ends of mfcc shorter than 50
+                    mfccs_segmented.append(segments[j])     # segments[i] shape  (13, 50) or (40, 50) if numcep = 40
+                    #print("segments[i] shape ", segments[i].shape)
+                    labels_segmented.append(row['lb'])
+                    sess_ids.append(row['split'])
+            # segment_labels = [CLASS_TO_ID[sample['emotion']] for i in range(len(segments))]
+            # labels_segmented.append(np.transpose(segment_labels))
+        # mfccs.append(mfcc)
+        if i % 100 == 0:
+            print("i:", i)
+    #print(len(labels_segmented))
+    #print(len(mfccs_segmented))
+    np.save(AIBO_MFCCS_LABELS_PATH, np.array(labels_segmented))
+    np.save(AIBO_MFCCS_SESSIONS_PATH, np.array(sess_ids))
+    np.save(AIBO_MFCCS_FEATURES_PATH, np.array(mfccs_segmented))
+
+
+def create_aibo_mspectr_dataset():
+    # with open(balanced_iemocap_path, 'rb') as handle:
+    #   iemocap = pickle.load(handle)
+    aibo = read_aibo()
+    labels_segmented = []
+    mspectr_segmented = []
+    segments = []
+    sess_ids = []
+
+    for i, row in aibo.iterrows():
+        #mfcc = generate_mel_spectr(aibo['path'][i], view=False).T
+        mspectr = generate_mel_spectr(aibo['path'][i], view=False)
+        # cut MFCCs into segments with 500 ms duration and 250 ms overlap
+        if mspectr.shape[1] > ICP_MFCC_DUR:  # skipping mfccs less than 50 (are there no?)
+            segments = [mspectr[:, y:y + ICP_MFCC_DUR] for y in range(0, mspectr.shape[1], MFCC_STEP)]
+            for j in range(len(segments)):
+                if segments[j].shape[1] is ICP_MFCC_DUR:  # skipping ends of mfcc shorter than 50
+                    mspectr_segmented.append(segments[j])     # segments[i] shape  (13, 50) or (40, 50) if numcep = 40
+                    #print("segments[i] shape ", segments[i].shape)
+                    labels_segmented.append(row['lb'])
+                    sess_ids.append(row['split'])
+            # segment_labels = [CLASS_TO_ID[sample['emotion']] for i in range(len(segments))]
+            # labels_segmented.append(np.transpose(segment_labels))
+        # mfccs.append(mfcc)
+        if i % 100 == 0:
+            print("i:", i)
+    #print(len(labels_segmented))
+    #print(len(mspectr_segmented))
+    np.save(AIBO_MSPECTR_LABELS_PATH, np.array(labels_segmented))
+    np.save(AIBO_MSPECTR_SESSIONS_PATH, np.array(sess_ids))
+    np.save(AIBO_MSPECTR_FEATURES_PATH, np.array(mspectr_segmented))
+
+
+@timeit
 def load_spectrogram_dataset():
-    return load_or_create_dataset(create_spectrogram_dataset, SPECTROGRAMS_FEATURES_PATH, SPECTROGRAMS_LABELS_PATH)
+    return load_or_create_dataset(create_spectrogram_dataset, SPECTROGRAMS_FEATURES_PATH, SPECTROGRAMS_LABELS_PATH,\
+                                  SPECTROGRAMS_SESSIONS_PATH)
 
 
 @timeit
@@ -431,12 +570,22 @@ def load_mfcc_dataset():
 
 @timeit
 def load_tbf_dataset():
-    return load_or_create_dataset(create_tbf_dataset, TBF_PATH, TBF_LABELS_PATH)
+    return load_or_create_dataset(create_tbf_dataset, TBF_PATH, TBF_LABELS_PATH, TBF_SESSIONS_PATH)
 
 
 @timeit
 def load_ravdess_dataset():
     return load_or_create_dataset(create_ravdess_dataset(), RAVDESS_PATH)
+
+
+@timeit
+def load_aibo_mfccs_dataset():
+    return load_or_create_dataset(create_aibo_mfccs_dataset, AIBO_MFCCS_FEATURES_PATH, AIBO_MFCCS_LABELS_PATH, AIBO_MFCCS_SESSIONS_PATH)
+
+
+@timeit
+def load_aibo_mspectr_dataset():
+    return load_or_create_dataset(create_aibo_mspectr_dataset, AIBO_MSPECTR_FEATURES_PATH, AIBO_MSPECTR_LABELS_PATH, AIBO_MSPECTR_SESSIONS_PATH)
 
 
 def balanced_sample_maker(X, y, random_seed=42):
@@ -513,14 +662,14 @@ def normalize(tensor, min, max):
     return tensor_norm
 
 
-def split_ravdess():
+def split_ravdess(input_type='mfcc'):
     dataset_db = read_ravdess()
     dataset_db['split'] = np.where((dataset_db.actor == 23) | (dataset_db.actor == 24), 'Test',
                                    (np.where((dataset_db.actor == 19) | (dataset_db.actor == 22), 'Val', 'Train')))
     modelling_db = dataset_db[(dataset_db.split == 'Train') | (dataset_db.split == 'Val')]
     modelling_db.index = range(len(modelling_db.index))
 
-    audios = create_ravdess_dataset()
+    audios = create_ravdess_dataset(input_type)
     #print("audios", audios.shape)       # audios (1012, 128, 259)
     #print("dataset_db", dataset_db.shape)       # dataset_db (1012, 7)
     #print("modelling_db", modelling_db.shape)       # modelling_db (924, 7)
@@ -529,38 +678,79 @@ def split_ravdess():
     y_train = dataset_db.emotion[(dataset_db['split'] == 'Train')]
     # y_train = modelling_db.emotion_lb[(modelling_db['split'] == 'Train')]
     #print(x_train.shape, y_train.shape)
+    x_val = audios[(dataset_db['split'] == 'Val')]
+    y_val = dataset_db.emotion[(dataset_db['split'] == 'Val')]
 
-    x_test = audios[(dataset_db['split'] == 'Val')]
-    y_test = dataset_db.emotion[(dataset_db['split'] == 'Val')]
+    x_test = audios[(dataset_db['split'] == 'Test')]
+    y_test = dataset_db.emotion[(dataset_db['split'] == 'Test')]
     # y_test = modelling_db.emotion_lb[(modelling_db['split'] == 'Val')]
     #print(x_test.shape, y_test.shape)
 
     x_train = np.array(x_train)
     y_train = np.array(y_train, dtype=int)
+    x_val = np.array(x_val)
+    y_val = np.array(y_val, dtype=int)
     x_test = np.array(x_test)
     y_test = np.array(y_test, dtype=int)
-    return x_train, y_train, x_test, y_test
+    return x_train, y_train, x_val, y_val, x_test, y_test
 
 
 def load_data(dataset="iemocap", input_type="mfcc"):
     if dataset == "ravdess":
-        x_train, y_train, x_test, y_test = split_ravdess()
+        x_train, y_train, x_val, y_val, x_test, y_test = split_ravdess(input_type)
+        #print(x_train.shape, y_train.shape, x_val.shape, y_val.shape, x_test.shape, y_test.shape)
+        #print("y_test unique", np.unique(y_test))
+        #print(type(x_train), type(y_train), type(x_val), type(y_val), type(x_test), type(y_test))
+    elif dataset == "aibo":
+        if input_type=="mfcc":
+            my_x, my_y, split = load_aibo_mfccs_dataset()
+            #my_x = np.load(AIBO_MFCCS_FEATURES_PATH)
+            #my_y = np.load(AIBO_MFCCS_LABELS_PATH)
+            #split = np.load(AIBO_MFCCS_SESSIONS_PATH)
+        else:
+            my_x, my_y, split = load_aibo_mspectr_dataset()
+            #my_x = np.load(AIBO_MSPECTR_FEATURES_PATH)
+            #my_y = np.load(AIBO_MSPECTR_LABELS_PATH)
+            #split = np.load(AIBO_MSPECTR_SESSIONS_PATH)
+
+        train_indexes, val_indexes, test_indexes = [],[],[]
+        for i in range(len(split)):
+            if split[i] == 'train':
+                train_indexes.append(i)
+            elif split[i] == 'val':
+                val_indexes.append(i)
+            else:
+                test_indexes.append(i)
+        x_train = my_x[train_indexes]
+        y_train = my_y[train_indexes]
+        x_val = my_x[val_indexes]
+        y_val = my_y[val_indexes]
+        x_test = my_x[test_indexes]
+        y_test = my_y[test_indexes]
+        print(x_train.shape, x_val.shape, x_test.shape)
+
     else:
         if input_type == "spectr":
             my_x, my_y = load_spectrogram_dataset()
-            split_index = 4290  # last sample from Session4
+            #split_index_val = 4290  # last sample from Session4
+            #split_index_test = 6789
         elif input_type == "tbf":
             my_x, my_y = load_tbf_dataset()
-            split_index = 4290
+            #split_index_val = 4290
+            #split_index_test = 6789
         elif input_type == "mspectr":
             my_x, my_y, sess_ids = load_mspectr_dataset()
             #sess_ids = np.load(MSPECTROGRAMS_SESSIONS_PATH, allow_pickle=True)
-            split_index = np.max(np.where(sess_ids == "Ses04"))     # take all Ses1-4 to training
+            split_index_val = np.max(np.where(sess_ids == "Ses03"))     # take all Ses1-4 to training
+            split_index_test = np.max(np.where(sess_ids == "Ses04"))
         else:
             my_x, my_y, sess_ids = load_mfcc_dataset()
+            #print(my_x.shape)
             #sess_ids = np.load(MFCCS_SESSIONS_PATH, allow_pickle=True)
-            split_index = np.max(np.where(sess_ids == "Ses04"))
-
+            split_index_val = np.max(np.where(sess_ids == '3'))
+            split_index_test = np.max(np.where(sess_ids == '4'))
+        #split_index_val = np.max(np.where(sess_ids == '3'))
+        #split_index_test = np.max(np.where(sess_ids == '4'))
         all_indexes = list(range(my_x.shape[0]))
         # skip_ratio = int(1 / 0.2)  # split ratio = 0.2
         # test_indexes = list(range(0, my_x.shape[0], skip_ratio))
@@ -568,26 +758,37 @@ def load_data(dataset="iemocap", input_type="mfcc"):
         # train_count = len(train_indexes)
         # test_count = len(test_indexes)
 
-        test_indexes = all_indexes[(split_index + 1):]
-        train_indexes = all_indexes[:(split_index + 1)]
+        test_indexes = all_indexes[(split_index_test + 1):]
+        val_indexes = all_indexes[split_index_val:split_index_test]
+        train_indexes = all_indexes[:(split_index_val + 1)]
 
         x_train = my_x[train_indexes]
         y_train = my_y[train_indexes]
+        x_val = my_x[val_indexes]
+        y_val = my_y[val_indexes]
         x_test = my_x[test_indexes]
         y_test = my_y[test_indexes]
 
-    min, max = extract_norm_parameters(x_train)
-
     # sample same number of samples per class
-    x_train, y_train = balanced_sample_maker(x_train, y_train)
+    #x_train, y_train = balanced_sample_maker(x_train, y_train)
     #print("X-train shape", X_train.shape)      # mspectr: X-train shape (5000, 128, 50); mfcc: (5000, 40, 50)
-    x_test, y_test = balanced_sample_maker(x_test, y_test)
+    #x_val, y_val = balanced_sample_maker(x_val, y_val)
+    #x_test, y_test = balanced_sample_maker(x_test, y_test)
+    if dataset == "aibo":
+        tensor_x_train_norm = t.Tensor(x_train)
+        tensor_x_test_norm = t.Tensor(x_test)
+        tensor_x_val_norm = t.Tensor(x_val)
+    else:
+        min, max = extract_norm_parameters(x_train)
+        tensor_x_train_norm = normalize(t.Tensor(x_train), min, max).type(t.FloatTensor)
+        tensor_x_test_norm = normalize(t.Tensor(x_test), min, max).type(t.FloatTensor)
+        tensor_x_val_norm = normalize(t.Tensor(x_val), min, max).type(t.FloatTensor)
 
-    tensor_x_train_norm = normalize(t.Tensor(x_train), min, max).type(t.FloatTensor)
-    tensor_x_test_norm = normalize(t.Tensor(x_test), min, max).type(t.FloatTensor)
-
+    #print(type(tensor_x_val_norm), type(t.LongTensor(y_val)))
     train_dataset = TensorDataset(tensor_x_train_norm, t.LongTensor(y_train))  # create your dataset
     # train_loader = DataLoader(my_dataset_train, batch_size=BATCH_SIZE, shuffle=True)  # create your dataloader
+    valid_dataset = TensorDataset(tensor_x_val_norm, t.LongTensor(y_val))
     test_dataset = TensorDataset(tensor_x_test_norm, t.LongTensor(y_test))
+    print(tensor_x_train_norm.shape, tensor_x_val_norm.shape, tensor_x_test_norm.shape)
 
-    return train_dataset, test_dataset
+    return train_dataset, valid_dataset, test_dataset, y_test

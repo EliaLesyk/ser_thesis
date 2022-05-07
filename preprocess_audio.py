@@ -1,6 +1,5 @@
 import math
 import wave
-
 import librosa
 import matplotlib.pyplot as plt
 import numpy as np
@@ -8,6 +7,8 @@ import pylab
 import scipy.io.wavfile as wav
 import scipy.signal as sig
 import skimage.measure
+from scipy.io.wavfile import read
+from sklearn import preprocessing
 from scipy.fftpack import dct  # Discrete Cosine Transform
 
 #IEMOCAP
@@ -67,18 +68,6 @@ def generate_spectrogram(wav_file, view=False):
     return spectrogram
 
 
-def generate_mel_spectr(file_audio, view=False):
-    y, sr = librosa.load(file_audio, sr=16000)      # works with errors without sr=16k
-    mspectr = librosa.feature.melspectrogram(y, sr, n_fft=4096, hop_length=int(0.01*sr), win_length=int(0.025*sr), \
-                                             window='hann')
-    log_mspectr = librosa.power_to_db(mspectr)      # 10*np.log10()
-    #print("mspectr.shape", mspectr.shape)      # (128, 120-1100)
-    if view:
-        plt.imshow(log_mspectr, cmap='hot', interpolation='nearest')
-        plt.show()
-    return log_mspectr
-
-
 def generate_ravdess_mspectr(file_audio):
     # n_mfcc = 20
     # data_sample = np.zeros(input_length)
@@ -101,6 +90,35 @@ def generate_ravdess_mspectr(file_audio):
     return logspec
 
 
+def generate_ravdess_mfcc(file_audio):
+    signal, sample_rate = librosa.load(file_audio, res_type='kaiser_fast', sr=22050 * 2)
+    signal, index = librosa.effects.trim(signal, top_db=25)
+    signal = sig.wiener(signal)
+
+    if len(signal) > rvd_input_len:
+        signal = signal[0:rvd_input_len]
+    elif rvd_input_len > len(signal):
+        max_offset = rvd_input_len - len(signal)
+        signal = np.pad(signal, (0, max_offset), "constant")
+
+    mfcc = librosa.feature.mfcc(signal, sr=sample_rate, n_mels=128, n_fft=2048, hop_length=512)
+    #logspec = librosa.amplitude_to_db(melspec)
+    #logspec = np.expand_dims(logspec, axis=-1)      # (128, 259) -> (128, 259, 1)
+    return mfcc
+
+
+def generate_mel_spectr(file_audio, view=False):
+    y, sr = librosa.load(file_audio, sr=16000)      # works with errors without sr=16k
+    mspectr = librosa.feature.melspectrogram(y, sr, n_fft=2048, hop_length=int(0.01*sr), win_length=int(0.025*sr), \
+                                             window='hann')
+    log_mspectr = librosa.power_to_db(mspectr)      # 10*np.log10()
+    #print("mspectr.shape", mspectr.shape)      # (128, 120-1100)
+    if view:
+        plt.imshow(log_mspectr, cmap='hot', interpolation='nearest')
+        plt.show()
+    return log_mspectr
+
+
 def lifter(cepstra, L=22):
     if L > 0:
         nframes, ncoeff = np.shape(cepstra)
@@ -121,15 +139,26 @@ def generate_mfcc(file_audio, view=False):
     # np.flipud - Reverse the order of elements along axis 0 (up/down) -> from (dur, numcep) to (numcep, dur)
     # mfcc_reord = np.flipud(mfcc).T
 
-    cep_lifter = NUMCEP * 2 + 2
-    mfcc = dct(np.flipud(generate_mel_spectr(file_audio, view=False)).T, type=2, axis=1, norm='ortho')[:, :NUMCEP]
-    mfcc = np.array(lifter(mfcc, cep_lifter), dtype=float)
+    #cep_lifter = NUMCEP * 2 + 2
+    #mfcc = dct(np.flipud(generate_mel_spectr(file_audio, view=False)), type=2, axis=1, norm='ortho')[:, :NUMCEP]
+    #mfcc = dct(np.flipud(generate_mel_spectr(file_audio, view=False).T), type=2, axis=1, norm='ortho')[:, :NUMCEP]
+    #mfcc = dct(generate_mel_spectr(file_audio, view=False), type=2, axis=1, norm='ortho')[:NUMCEP,:]
+    #mfcc = np.array(lifter(mfcc, cep_lifter), dtype=float)
+
+    #mfcc_tmp = [dct(10*np.log10(np.flipud(dt).T), type=2, axis=1, norm='ortho')[:num_ceps,:] for dt in data]
+    #mfcc = np.array([lifter(dt, cep_lifter) for dt in mfcc_tmp], dtype=float)
+
+    #sig, fs = librosa.load(file_audio)
+    fs, audio_input = read(file_audio)
+    scaler = preprocessing.StandardScaler()  # z = (x - mean) / std_dev
+    standard_X = np.hstack(scaler.fit_transform(np.vstack(audio_input)))
+    mfcc = librosa.feature.mfcc(standard_X, fs, n_mfcc=NUMCEP, n_fft=2048, lifter=2 * NUMCEP)
 
     if view:
         fs, sig = wav.read(file_audio)
-        plt.figure(figsize=(20,5))
+        plt.figure(figsize=(20, 5))
         plt.title('MFCC')
-        plt.imshow(mfcc, aspect='auto', extent=[0, len(sig)/fs, 0,  10])
+        plt.imshow(mfcc.T, aspect='auto', extent=[0, len(sig)/fs, 0,  10])
         plt.ylabel('Coefficients', fontsize=18)
         plt.xlabel('Time [sec]', fontsize=18)
         plt.tight_layout()

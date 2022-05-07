@@ -6,7 +6,7 @@ import math
 
 
 class CNN(nn.Module):
-    def __init__(self, n_classes=5, kernel1=(3,1), kernel2=(2,1), dur=50, numcep=40, input_type="mfcc"):
+    def __init__(self, n_classes=5, kernel1=(3,1), kernel2=(2,1), dur=50, numcep=40, input_type="mfcc", dataset=None):
         super(CNN, self).__init__()
 
         # Input shape = (batch_size, 1, numceps=40, mfcc_dur=50)
@@ -38,14 +38,18 @@ class CNN(nn.Module):
         #self.pool3 = nn.MaxPool2d(kernel_size=kernel_size2)
         self.drop3 = nn.Dropout(0.25)
 
-        self.conv4 = nn.Conv2d(in_channels=64, out_channels=5, kernel_size=kernel1)
+        self.conv4 = nn.Conv2d(in_channels=64, out_channels=self.n_classes, kernel_size=kernel1)
+        #print("self.n_classes", self.n_classes)
         self.bn4 = nn.BatchNorm2d(num_features=self.n_classes)
         self.relu4 = nn.ELU()
         #self.pool4 = nn.MaxPool2d(kernel_size=kernel_size2)
         self.drop4 = nn.Dropout(0.25)
 
         out_lin_dim = self._calc_lin_dim(self.numcep, self.dur, self.kernel1, self.kernel2)
-        self.fc = nn.Linear(in_features=out_lin_dim, out_features=256)
+        if dataset=='aibo':
+            self.fc = nn.Linear(in_features=140, out_features=256)
+        else:
+            self.fc = nn.Linear(in_features=out_lin_dim, out_features=256)
         self.relu4 = nn.GELU()
         self.fc1 = nn.Linear(in_features=256, out_features=self.n_classes)
 
@@ -322,7 +326,7 @@ class Conv_GRU(nn.Module):
 
 class Conv_GRU(nn.Module):
 
-    def __init__(self, input_shape, hidden_size, kernel1, kernel2, bidirectional=True, nlayers_rnn=2, n_classes=5):
+    def __init__(self, input_shape, hidden_size, kernel1, kernel2, bidirectional=True, nlayers_rnn=2, n_classes=5, dataset='None'):
         super(Conv_GRU, self).__init__()
 
         self.input_shape = input_shape  # [batch size, channels, sequence length, # MFCCs]
@@ -364,7 +368,18 @@ class Conv_GRU(nn.Module):
         #input_size = self.n_ch * outConvShape   # 4*140
 
         # GRU
-        self.GRU = t.nn.GRU(outConvShape[2], self.hidden_size,
+        if dataset=='aibo':
+            #if input =="mspectr":
+             #   self.GRU = t.nn.GRU(130, self.hidden_size,
+              #                      bidirectional=self.bidirectional,
+               #                     num_layers=self.nlayers_Bigru,
+                #                    batch_first=True)
+            self.GRU = t.nn.GRU(20, self.hidden_size,
+                                    bidirectional=self.bidirectional,
+                                    num_layers=self.nlayers_Bigru,
+                                    batch_first=True)
+        else:
+            self.GRU = t.nn.GRU(outConvShape[2], self.hidden_size,
                                 bidirectional=self.bidirectional,
                                 num_layers=self.nlayers_Bigru,
                                 batch_first=True)
@@ -436,6 +451,7 @@ class Conv_GRU(nn.Module):
         # Concatenate sequence length and resulting # MFCCs -> [batch size, sequence length, channels*# MFCCs]
 
         # GRU
+        #print(out.shape)
         out, _ = self.GRU(out)
         out = self.BatchNorm_biGru(out)
         out = self.fc_gru1(out.view(out.size(0), -1))

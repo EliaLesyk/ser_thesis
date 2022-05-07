@@ -2,6 +2,7 @@ import argparse
 
 import numpy as np
 import torch as t
+
 # from sklearn.model_selection import train_test_split
 # import sys
 import torch.nn as nn
@@ -11,23 +12,24 @@ from torch.utils.data import DataLoader
 
 from models import CNN, CNN_Spectr, Conv_GRU, MLP, AttentionLSTM
 from prepare_data import load_data
-from preprocess_audio import NUMCEP as icp_numcep, ICP_MFCC_DUR as icp_mfcc_dur, rvd_mspectr_dur, SPECTR_DUR as spectr_dur
-from trainer import Trainer
-from utils import get_device
+from preprocess_audio import NUMCEP as icp_numcep, ICP_MFCC_DUR as icp_mfcc_dur, rvd_mspectr_dur, \
+    SPECTR_DUR as spectr_dur
+from trainer import Trainer, display_results
+from utils import get_device, get_classnames
 
 # some hyper parameters
-#BATCH_SIZE = 8
-#EPOCHS = 10
-#LEARN_RATE = 0.001     # 0.0001 performs worse
-#MOMENTUM = 0.9
-#WEIGHT_DECAY = 0
+# BATCH_SIZE = 8
+# EPOCHS = 10
+# LEARN_RATE = 0.001     # 0.0001 performs worse
+# MOMENTUM = 0.9
+# WEIGHT_DECAY = 0
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("model_name", type=str)     # default="gru"
-    parser.add_argument("dataset", type=str)        # default="iemocap"
-    parser.add_argument("model_input", type=str)        # default="mspectr"
+    parser.add_argument("model_name", type=str)  # default="gru"
+    parser.add_argument("dataset", type=str)  # default="iemocap"
+    parser.add_argument("model_input", type=str)  # default="mspectr"
     parser.add_argument("batch_size", type=int, default=64)
     parser.add_argument("epochs", type=int, default=100)
     parser.add_argument("lr", type=float, default=0.001)
@@ -38,13 +40,16 @@ if __name__ == "__main__":
     print("Used device is:", device)
 
     if args.dataset == "ravdess":
-        dur = rvd_mspectr_dur       # 259
+        dur = rvd_mspectr_dur  # 259
         numcep = 128
     else:
-        dur = icp_mfcc_dur      # 50
-        numcep = icp_numcep     # 40
+        dur = icp_mfcc_dur  # 50
+        numcep = icp_numcep  # 40
     # disgust is somehow not in RAVDESS dataset, only neu, hap, sad, ang, fear
-    n_classes = 5
+
+    CLASS_TO_ID = get_classnames(args.dataset)
+    n_classes = len(list(CLASS_TO_ID.keys()))
+    # print("n_classes", n_classes)
 
     input_type = args.model_input
     BATCH_SIZE = args.batch_size
@@ -52,23 +57,36 @@ if __name__ == "__main__":
     L_RATE = args.lr
     W_DECAY = args.w_decay
 
-    train_dataset, test_dataset = load_data(dataset=args.dataset, input_type=input_type)
+    train_dataset, valid_dataset, test_dataset, y_test = load_data(dataset=args.dataset, input_type=input_type)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    valid_loader = DataLoader(valid_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     # create an instance of our model
     if args.model_name == "gru":
         unsqueeze_needed = True
-        model = Conv_GRU(input_shape=[BATCH_SIZE, 1, numcep, dur], kernel1=(3,3), kernel2=(2,2), hidden_size=32).to(device)
+        if args.dataset=='aibo':
+            #if input_type == 'mspectr':
+             #   model = Conv_GRU(input_shape=[BATCH_SIZE, 1, numcep, dur], kernel1=(3, 3), kernel2=(2, 2), hidden_size=32, dataset='aibo').to(
+              #  device)
+            model = Conv_GRU(input_shape=[BATCH_SIZE, 1, numcep, dur], kernel1=(3, 3), kernel2=(2, 2), hidden_size=32, dataset='aibo').to(
+                device)
+        else:
+            model = Conv_GRU(input_shape=[BATCH_SIZE, 1, numcep, dur], kernel1=(3, 3), kernel2=(2, 2), hidden_size=32).to(
+            device)
     elif args.model_name == "cnn":
         unsqueeze_needed = True
-        if input_type == "mfcc" or input_type == "mspectr":
-            model = CNN(n_classes=n_classes, kernel1=(3,3), kernel2=(2,2), numcep=numcep, dur=dur, \
-                        input_type=input_type).to(device)
-        else:                  # input_type = "spectr"
-            unsqueeze_needed = False
-            model = CNN_Spectr(n_classes=n_classes, input_size=spectr_dur, pool_size=2, num_filters=[8, 8, 8, 8], \
-                           dropout=0.5, conv_size=3).to(device)
+        if args.dataset=='aibo':
+            model = CNN(n_classes=n_classes, kernel1=(3, 3), kernel2=(2, 2), numcep=numcep, dur=dur, \
+                        input_type=input_type, dataset='aibo').to(device)
+        else:
+            if input_type == "mfcc" or input_type == "mspectr":
+                model = CNN(n_classes=n_classes, kernel1=(3, 3), kernel2=(2, 2), numcep=numcep, dur=dur, \
+                            input_type=input_type).to(device)
+            else:  # input_type = "spectr"
+                unsqueeze_needed = False
+                model = CNN_Spectr(n_classes=n_classes, input_size=spectr_dur, pool_size=2, num_filters=[8, 8, 8, 8], \
+                                   dropout=0.5, conv_size=3).to(device)
     elif args.model_name == "mlp-tbf":
         unsqueeze_needed = False
         input_type = "tbf"
@@ -81,22 +99,29 @@ if __name__ == "__main__":
         raise Exception("model_name parameter has to be one of \
         [gru|cnn|att_lstm] | [mspectr|mfcc|tbf|txt] | [iemocap|ravdess] | batch_size | number of epochs")
 
+    # classnames = [CLASS_TO_ID, ID_TO_CLASS, CLASSNAMES]
     # set up a suitable loss criterion (you can find a pre-implemented loss functions in t.nn)
     criterion = nn.CrossEntropyLoss()
-    #criterion = t.nn.BCEWithLogitsLoss()
+    # criterion = t.nn.BCEWithLogitsLoss()
 
     # set up the optimizer
-    optimizer = Adam(model.parameters(), lr=L_RATE, weight_decay=L_RATE) # weight_decay = 0.0001
-    #optimizer = t.optim.SGD(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
+    optimizer = Adam(model.parameters(), lr=L_RATE, weight_decay=L_RATE)  # weight_decay = 0.0001
+    # optimizer = t.optim.SGD(model.parameters(), lr=LEARN_RATE, momentum=MOMENTUM)
 
     # create an object of type Trainer and set its early stopping criterion
-    trainer = Trainer(model, args.model_name, args.dataset, criterion, optimizer, train_loader, test_loader, \
-                     cuda=t.cuda.is_available(), early_stopping_patience=20, unsqueeze_needed=unsqueeze_needed)
+    trainer = Trainer(model, args.model_name, args.dataset, criterion, optimizer, train_loader, valid_loader,
+                      test_loader, cuda=t.cuda.is_available(), early_stopping_patience=20,
+                      unsqueeze_needed=unsqueeze_needed, CLASS_TO_ID=CLASS_TO_ID)
 
-    #if len(sys.argv) >= 2:
-     #   trainer.restore_checkpoint(int(sys.argv[1]))
+    print(model)
+
+    # if len(sys.argv) >= 2:
+    #   trainer.restore_checkpoint(int(sys.argv[1]))
 
     # go, go, go... call fit on trainer
+    # f = open('res/losses_{}_{}_{}.txt'.format(args.model_name, args.dataset, args.model_input), "w")
+    # f.write(model)
+    # f.write(trainer.fit(EPOCHS))
     res = trainer.fit(EPOCHS)
 
     # plot the results
@@ -104,5 +129,18 @@ if __name__ == "__main__":
     plt.plot(np.arange(len(res[1])), res[1], label='val loss')
     plt.yscale('log')
     plt.legend()
-    plt.savefig('losses_{}.png'.format(args.model_name))
+    plt.savefig('res/losses_{}_{}_{}.png'.format(args.model_name, args.dataset, args.model_input))
 
+    print("Starting testing")
+    # test_res = trainer.test()
+    # f.write('TEST')
+    test_res, pred = trainer.test()
+    display_results(y_test, pred, args.dataset, args.model_name, args.model_input, CLASS_TO_ID)
+    # f.write(trainer.test())
+    # f.write(display_results(y_test=y_test, pred_probs=pred))
+# f.close()
+# plot the results
+# plt.plot(np.arange(len(test_res)), test_res, label='test loss')
+# plt.yscale('log')
+# plt.legend()
+# plt.savefig('test_losses_{}.png'.format(args.model_name))
